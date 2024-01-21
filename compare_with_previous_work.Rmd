@@ -1,0 +1,933 @@
+---
+title: "Compare with previous work"
+author: "Dongni Zhang"
+date: '2023-11'
+output: html_document
+---
+```{r include=FALSE}
+# include packages
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+#library(tidyverse)
+library(metR)
+#install.packages('metR')
+library(ggplot2)
+#install.packages("pracma")
+library(pracma)#AUC
+library(rootSolve)
+#install.packages("sparsevar")
+library(sparsevar)
+library(cowplot)
+require(gridExtra)
+```
+
+## Compare all three reproduction numbers with the ones in our previous paper: Epidemic models with digital and manual tracing
+
+# Manual CT: compare two papers' results
+
+```{r}
+######################################################
+# Manual tracing: (iterative, full tracing, without delay)
+# probability of being traced: p 
+######################################################
+# single-type branching process of CT-components
+# Component Reproduction number R_m:
+# the average number of new components produced by one component
+######################################################
+######################################################
+R_M = function(beta,gamma,delta,p){
+  
+   x = beta*p-gamma-delta + sqrt((beta*p+gamma+delta)^2-4*beta*p*gamma)
+   f = ((1-p)*x)/(2*p*delta)
+  
+  return(f)
+  
+}
+
+######################################################
+# individual reproduction number: 
+# average infections produced by one typical infected
+######################################################
+
+R_M_ind_paper_2 = function(beta,p,delta,gamma){
+  
+  x = beta*p-gamma-delta + sqrt((beta*p+gamma+delta)^2-4*beta*p*gamma)
+  f = ((1-p)*x)/(2*p*delta)
+  N_c = f/(beta*(1-p)/(beta*p+gamma+delta))
+  mu = 1+ (beta*p)/(beta*p+gamma+delta) * N_c
+  result1 = (f+mu-1)/(mu)
+  return(result1)
+  }
+
+R_M_paper_2 = function(beta,gamma,delta, p, N){
+  
+  EX = (beta*(1- p))/(beta* p+gamma+delta)
+  ENc = 1
+  
+  p_rw=(beta* p)/(beta* p+gamma);
+  
+  q=delta/(beta* p+gamma+delta);
+  
+  for (k in 1:N) {
+    
+    p_k=0
+    
+    for (i in 1:ceiling(k/2)) {
+      
+      p_k=p_k+(1/(2*i-1))*choose((2*i-1),i)*(p_rw)^(i-1)*(1-p_rw)^(i);
+      
+    }
+    
+    ENc=ENc+(1-p_k)*(1-q)^(k);
+    
+  }
+  
+  R_c = EX*ENc
+  
+  
+  return( R_c )
+  
+}
+```
+
+```{r}
+# set parameters for old model: 
+beta = 3/5
+gamma = 1/5 
+
+# p takes values in 
+n_grid = 100
+p_seq = seq(0,1, length.out=n_grid)
+
+# p_D takes values in 
+p_D_seq = seq(0.01,1, length.out=n_grid)
+# Note: p_D cannot start from zero. 
+
+# store the R_M values from the old model in a matrix:
+R_M_old_m=matrix(nrow = n_grid,ncol = n_grid)
+
+
+for (k in (1:n_grid)) {
+  
+  p1 = p_seq[k]
+  
+  for (j in (1:n_grid)) {
+    
+    p2 = p_D_seq[j] 
+    
+    R = R_M_paper_2(beta=beta, gamma=gamma, 
+                    delta= (p2/(1-p2))*gamma,
+                    p=p1,N=100)
+    
+    R_M_old_m[j,k] = R
+    
+  }
+}
+
+# get for how large p_D we need, so that R_m_old =1 when p = 0? 
+
+R_m_old_critical = function(x){
+  1- R_M_paper_2(beta=beta, 
+                gamma=gamma, 
+                delta=x,
+                p=0,N=100)
+}
+
+delta_critical = uniroot(R_m_old_critical, c(0,1))$root
+pi_D_critical = delta_critical/(delta_critical+gamma)
+```
+
+```{r}
+##############
+# New Model #
+##############
+
+R_manual_delay = function(mu, beta_N, beta_G, tau, p_D, T_L, T_D, p_M){
+  
+D_tilde_minus_1 = mu
+
+############################################  
+# elements of the next generation matrix M: 
+############################################
+  
+# For type-1: 
+
+m12 = D_tilde_minus_1*(1-exp(-beta_N*tau))*p_D*p_M
+m11 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(1-p_D*p_M)
+m13 = beta_G*tau
+
+# For type-3: 
+m32 = mu*(1-exp(-beta_N*tau))*p_D*p_M
+m31 = mu*(1-exp(-beta_N*tau))*(1-p_D*p_M)
+m33 = beta_G*tau
+
+# For type-2: 
+# let 
+T_DL = T_D-T_L
+
+# probability: P(recovered before being traced)
+if (tau <= T_DL){
+  p_r = 1
+}
+if (T_DL <= 0){
+  p_r = 0
+}
+if (T_DL < tau && 0 < T_DL){
+  p_r = (T_D-T_L)/tau
+}
+
+# probability: P(infecting a given friend, given that traced before recovered)
+
+if (tau <= T_DL){
+  p_i_c = 0
+}
+if (T_DL <= -tau){
+  p_i_c = 0
+}
+if (T_DL < 0 && T_DL > -tau){
+  p_i_c = (tau+T_DL)/tau - (1- exp(-beta_N * (tau+T_DL)))/(beta_N * tau)
+}
+if (T_DL < tau && T_DL >= 0){
+  p_i_c = (tau-T_DL)/tau - (exp(-beta_N * T_DL)- exp(-beta_N * tau))/(beta_N * tau)
+}
+
+#print(p_i_c)
+
+# if being traced, the expected infectious period (shortened by CT)
+
+if (tau <= T_DL){
+  V = 0
+}
+if (T_DL <= -tau){
+  V = 0
+}
+if (T_DL < 0 && T_DL > -tau){
+  V = (tau-T_L+T_D)^2 /(2*tau)
+}
+if (T_DL < tau && T_DL >= 0){
+  V = (tau+T_L-T_D)*(tau-T_L+T_D)/(2*tau)
+}
+
+#print(V)
+
+m21 = D_tilde_minus_1*(1-exp(-beta_N*tau))*p_r*(1-p_M*p_D) + D_tilde_minus_1*p_i_c
+m22 = D_tilde_minus_1*(1-exp(-beta_N*tau))*p_r*p_D*p_M
+m23 = beta_G * V  + beta_G*tau*p_r
+    
+M_manual <- matrix(c(m11, m12, m13, m21, m22, m23, m31,m32, m33), 3, 3, byrow=TRUE)
+  
+#ev <- eigen(M)
+
+#eigenvalues <- ev$values
+
+return(spectralRadius(M_manual))
+  
+}
+
+# set corresponding parameters for new epidemic model: 
+
+# Fix mean degree
+mu = 5
+T_L = 4
+T_D = 3
+
+# get the corresponding tau for pi_D_critical from old model
+tau_critical = (1-pi_D_critical)/gamma
+
+betaN_sol = log(mu/(mu-0.5*1))/tau_critical
+betaG_sol = (0.5*1)/tau_critical
+
+# store the R_M values from this model in a matrix:
+R_M_new_m = matrix(nrow = n_grid,ncol = n_grid)
+
+for (k in (1:n_grid)) {
+  
+  p1 = p_seq[k]
+  
+  for (j in (1:n_grid)) {
+    
+    p2 = p_D_seq[j] 
+    
+    tau2 = (1-p2)/gamma
+    
+    R = R_manual_delay(mu=mu, beta_N= betaN_sol,
+                       beta_G= betaG_sol, 
+                       tau=tau2, p_D=p2, T_L= T_L, T_D=T_D,
+                       p_M=p1)
+    
+    R_M_new_m[j,k] = R
+    
+  }
+}
+
+# store in a data frame 
+data_M_compare <- expand.grid(diag_prob=p_D_seq,manual_prob=p_seq)
+data_M_compare$R_M_old = c(R_M_old_m)
+data_M_compare$R_M_new <-c(R_M_new_m)
+
+#setEPS()
+#postscript("compare_R_M.eps") 
+
+# Plot the two critical lines: 
+plot_M <- ggplot(data_M_compare)+ 
+  labs(title="R_M=1", y="probability of being diagnosed p_D", x="manual reporting probability p_M")+
+  # set contour breaks at desired level R_M =1
+  geom_contour(aes(x=manual_prob,y=diag_prob,z = R_M_new), 
+               breaks = 1,size = 0.4,col= 'red')+
+  # set contour breaks at desired level R_M_2 =1
+  geom_contour(aes(x=manual_prob,y=diag_prob,z = R_M_old), 
+               breaks = 1, col = '#05B9E2',size = 0.4)+  
+  theme(plot.title = element_text(hjust = 0.5))+
+  ylim(0.01,1)+
+  xlim(0,1)+
+  theme(text = element_text(size=10))
+```
+# Digital CT: compare two papers' results
+```{r}
+
+######################################################
+# Old model: 
+# Digital tracing: (iterative, full tracing, without delay)
+# fraction of using app and following the advice: p_A
+######################################################
+# two-type branching process:
+# type 1: non-app-users
+# type 2: app-component
+# reproduction number for the branching process: R_A
+######################################################
+######################################################
+
+R_D_paper_2 = function(beta,gamma,delta, p_A,N){
+  
+  # elements of the next generation matrix M: 
+  
+  m11 = (beta * (1- p_A))/ (gamma + delta)
+  m22 = 0 
+  trace_M = m11 + m22
+  m21 = (beta * p_A)/ (gamma + delta)
+  
+  
+  EX = (beta*(1- p_A))/(beta* p_A+gamma+delta)
+  ENc = 1
+  
+  p_rw=(beta* p_A)/(beta* p_A+gamma);
+  
+  q=delta/(beta* p_A+gamma+delta);
+  
+  for (k in 1:N) {
+    
+    p_k=0
+    
+    for (i in 1:ceiling(k/2)) {
+      
+      p_k=p_k+(1/(2*i-1))*choose((2*i-1),i)*(p_rw)^(i-1)*(1-p_rw)^(i);
+      
+    }
+    
+    ENc=ENc+(1-p_k)*(1-q)^(k);
+    
+  }
+  
+  m12 = EX*ENc
+  
+  det_M = (-1)*m12*m21
+  
+  return(trace_M/2+sqrt((trace_M/2)^2-det_M))
+  
+  
+}
+```
+
+
+```{r}
+# set parameters for old model: 
+beta = 3/5
+gamma = 1/5 
+
+# pi takes values in 
+n_grid = 100
+pi_seq = seq(0,1, length.out=n_grid)
+
+# p_D takes values in 
+p_D_seq = seq(0.01,1, length.out=n_grid)
+# Note: p_D cannot start from zero. 
+
+# store the R_D values from the old model in a matrix:
+R_D_old_m=matrix(nrow = n_grid,ncol = n_grid)
+
+
+for (k in (1:n_grid)) {
+  
+  p1 = pi_seq[k]
+  
+  for (j in (1:n_grid)) {
+    
+    p2 = p_D_seq[j] 
+    
+    R = R_D_paper_2(beta=beta, gamma=gamma, 
+                    delta= (p2/(1-p2))*gamma,
+                    p_A=p1,N=100)
+    
+    R_D_old_m[j,k] = R
+    
+  }
+}
+
+# get for how large p_D we need, so that R_m_old =1 when p = 0? 
+
+R_d_old_critical = function(x){
+  1-R_D_paper_2(beta=beta, 
+                gamma=gamma, 
+                delta=x,
+                p_A=0,N=100)
+}
+
+delta_critical = uniroot(R_d_old_critical, c(0,1))$root
+pi_D_critical = delta_critical/(delta_critical+gamma)
+
+```
+
+
+```{r}
+##############
+# New Model #
+##############
+
+# set corresponding parameters for new epidemic model: 
+
+# Fix mean degree
+mu = 5
+T_L = 4
+
+# get the corresponding tau for pi_D_critical from old model
+tau_critical = (1-pi_D_critical)/gamma
+
+betaN_sol = log(mu/(mu-0.5*1))/tau_critical
+betaG_sol = (0.5*1)/tau_critical
+
+# store the R_D values from this model in a matrix:
+R_D_new_m = matrix(nrow = n_grid,ncol = n_grid)
+
+for (k in (1:n_grid)) {
+  
+  p1 = pi_seq[k]
+  
+  for (j in (1:n_grid)) {
+    
+    p2 = p_D_seq[j] 
+    
+    tau2 = (1-p2)/gamma
+    
+    R = R_digital_network(mu=mu, beta_N= betaN_sol, 
+                          beta_G= betaG_sol, 
+                          tau=tau2, p_D=p2, T_L= T_L,
+                          pi=p1)
+    
+    R_D_new_m[j,k] = R
+    
+  }
+}
+
+# store in a data frame 
+data_D_compare <- expand.grid(diag_prob=p_D_seq,app_fraction=pi_seq)
+data_D_compare$R_D_old = c(R_D_old_m)
+data_D_compare$R_D_new <-c(R_D_new_m)
+
+#setEPS()
+#postscript("compare_R_D.eps") 
+# Plot the two critical lines: 
+
+plot_D <- ggplot(data_D_compare)+ 
+  labs(title="R_D=1", y="probability of being diagnosed p_D", x="app-using fraction pi_A")+
+  # set contour breaks at desired level R_D =1
+  geom_contour(aes(x=app_fraction,y=diag_prob,z = R_D_new), 
+               breaks = 1,size = 0.4,col= 'red')+
+  # set contour breaks at desired level R_D_2 =1
+  geom_contour(aes(x=app_fraction,y=diag_prob,z = R_D_old), 
+               breaks = 1, col = '#05B9E2',size = 0.4)+  
+  theme(plot.title = element_text(hjust = 0.5))+
+  ylim(0.01,1)+
+  xlim(0,1)+
+  theme(text = element_text(size=10))
+
+```
+
+# Combined CT: compare two papers' results
+```{r}
+######################################################################################
+# Old Model:
+# Manual and Digital tracing: (iterative, full tracing, without delay)
+# probability of being traced: p 
+# fraction of using app and following the advice: p_A
+######################################################################################
+# first, the process of  N(t)
+# input: 
+# size of the component starts by number of app-users = i,  number of non-app-users = j
+# p: probability of successful manual contact tracing
+# p_A: probability of using a tracing app and following the advice
+
+# output: 
+# data contaning the number of app-users, non-app-users at each event time   
+# size of the component starts by number of app-users = i,  number of non-app-users = j
+
+######################################################################################
+
+N_c <- function(i,j,p,p_A,beta,gamma,delta){
+  
+  time = c(0)
+  n_app_users = c(i)
+  n_nonapp_users = c(j)
+  
+  
+  N_1t = i
+  N_2t = j
+  
+  while (N_1t+N_2t > 0) {
+    
+    # the rates of five events
+    r1 = N_1t * beta * p_A + N_2t * beta * p_A * p
+    r2 = (N_1t + N_2t) * beta * (1-p_A)  * p
+    r3 = (N_1t ) * gamma
+    r4 = (N_2t ) * gamma
+    r5 = (N_1t+ N_2t) * delta
+    
+    # new event time 
+    rate = r1+r2+r3+r4+r5
+    t_event = time[length(time)] + rexp(1, rate)
+    time = c(time,t_event)
+    
+    # decide which event 
+    rd = runif(1)
+    
+    if ( rd < r1/rate) {
+      # new infection to app-user 
+      N_1t = N_1t + 1
+      N_2t = N_2t + 0
+      n_app_users = c(n_app_users,N_1t)
+      n_nonapp_users = c(n_nonapp_users,N_2t)
+      
+    } else if ( rd >= r1/rate & rd < (r1+r2)/rate) {
+      # new infection to non-app-user 
+      N_1t = N_1t + 0
+      N_2t = N_2t + 1
+      n_app_users = c(n_app_users,N_1t)
+      n_nonapp_users = c(n_nonapp_users,N_2t)
+    } else if ( rd >= (r1+r2)/rate & rd < (r1+r2+r3)/rate) {
+      # natural recovery of app-user 
+      N_1t = N_1t - 1
+      N_2t = N_2t + 0
+      n_app_users = c(n_app_users,N_1t)
+      n_nonapp_users = c(n_nonapp_users,N_2t)
+    } else if ( rd >= (r1+r2+r3)/rate & rd < (r1+r2+r3+r4)/rate) {
+      # natural recovery of non-app-user 
+      N_1t = N_1t + 0
+      N_2t = N_2t - 1
+      n_app_users = c(n_app_users,N_1t)
+      n_nonapp_users = c(n_nonapp_users,N_2t)
+    }else {
+      # diagnosis of either non-app-user or app user
+      N_1t =  0
+      N_2t = 0
+      n_app_users = c(n_app_users,N_1t)
+      n_nonapp_users = c(n_nonapp_users,N_2t)
+    }
+    
+    
+  }
+  
+  data.component = data.frame(time,n_app_users,n_nonapp_users)
+  
+  return(data.component)
+  
+}
+######################################################################################
+# next, function to compute R_DM
+######################################################################################
+#set.seed(123456)
+R_DM_paper_2 <- function(p,p_A,beta,gamma,delta){
+  
+  # component with root as App-user (type-1 individual)
+  # Area under curve of the number of type-2 individuals (Non-app-users) produced by such component
+  AUC_N_2_C1 = c()
+  # Area under curve of number of type-1 individuals (app-users) produced by such component
+  AUC_N_1_C1 = c()
+  
+  # run simulations
+  for (k in (1:10000)) {
+    data_component_a = N_c(i = 1,j = 0,p = p,p_A = p_A,beta = beta,gamma = gamma,delta = delta)
+    cuts = data_component_a$time
+    vals_1 = data_component_a$n_app_users
+    AUC_1 = 0
+    
+    for (i in (1:length(cuts))) {
+      t_interval = cuts[i+1] - cuts[i]
+      area = vals_1[i]*t_interval
+      AUC_1 = AUC_1 + area
+      
+      if (i+1==length(cuts)) break
+    }
+    
+    AUC_N_1_C1 = c(AUC_N_1_C1,AUC_1)
+    
+    vals_2 = data_component_a$n_nonapp_users
+    AUC_2 = 0
+    
+    for (i in (1:length(cuts))) {
+      t_interval = cuts[i+1] - cuts[i]
+      area = vals_2[i]*t_interval
+      AUC_2 = AUC_2 + area
+      
+      if (i+1==length(cuts)) break
+    }
+    
+    AUC_N_2_C1 = c(AUC_N_2_C1,AUC_2)
+    
+    
+  }
+  
+  
+  # component with root as non-App-user (type-2 individual)
+  # Area under curve of the number of type-2 individuals (Non-app-users) produced by such component
+  AUC_N_2_C2 = c()
+  # Area under curve of number of type-1 individuals (app-users) produced by such component
+  AUC_N_1_C2 = c()
+  
+  # run simulations
+  for (k in (1:10000)) {
+    data_component_na = N_c(i = 0,j = 1,p = p,p_A = p_A,beta = beta,gamma = gamma,delta = delta)
+    cuts = data_component_na$time
+    vals_1 = data_component_na$n_app_users
+    AUC_1 = 0
+    
+    for (i in (1:length(cuts))) {
+      t_interval = cuts[i+1] - cuts[i]
+      area = vals_1[i]*t_interval
+      AUC_1 = AUC_1 + area
+      
+      if (i+1==length(cuts)) break
+    }
+    
+    AUC_N_1_C2 = c(AUC_N_1_C2,AUC_1)
+    
+    vals_2 = data_component_na$n_nonapp_users
+    AUC_2 = 0
+    
+    for (i in (1:length(cuts))) {
+      t_interval = cuts[i+1] - cuts[i]
+      area = vals_2[i]*t_interval
+      AUC_2 = AUC_2 + area
+      
+      if (i+1==length(cuts)) break
+    }
+    
+    AUC_N_2_C2 = c(AUC_N_2_C2,AUC_2)
+    
+    
+  }
+  
+  # compute the next-generation matrix
+  m_11 = mean(AUC_N_2_C1)*p_A*beta*(1-p)
+  m_21 = mean(AUC_N_2_C2)*p_A*beta*(1-p)
+  m_12 =(mean(AUC_N_2_C1)+mean(AUC_N_1_C1))*(1-p_A)*beta*(1-p)
+  m_22 =(mean(AUC_N_2_C2)+mean(AUC_N_1_C2))*(1-p_A)*beta*(1-p)
+  
+  # compute the largest eigenvalue of next-generation matrix
+  
+  
+  tr_M = m_11+m_22
+  
+  det_M = m_11*m_22 - m_12*m_21
+  
+  
+  return(tr_M/2+sqrt((tr_M/2)^2-det_M))
+  
+}
+```
+
+
+```{r}
+##############
+# New Model #
+##############
+R_comb = function(mu, beta_N, beta_G, tau, p_D, T_L, T_D, p_M, pi){
+
+######################################################
+# Type-1: non-app-user infected without DCT-link, without MCT-link, through network. 
+# Type-2: non-app-user infected without DCT-link, with MCT-link, through network.
+# Type-3: non-app-user infected without DCT-link, without MCT-link, through homo. 
+  
+# Type-4: app-user infected without DCT-link, without MCT-link, through network. 
+# Type-5: app-user infected without DCT-link, with MCT-link, through network. 
+# Type-6: app-user infected with DCT-link,-----, through network. 
+# Type-7: app-user infected without DCT-link, without MCT-link, through homo. 
+# Type-8: app-user infected with DCT-link, without MCT-link, through homo. 
+######################################################
+  
+D_tilde_minus_1 = mu
+
+m_11 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(1-p_D*p_M)*(1-pi)
+m_12 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(p_D*p_M)*(1-pi)  
+m_13 = beta_G * tau* (1-pi)
+m_14 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(1-p_D*p_M)*(pi)
+m_15 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(p_D*p_M)*(pi)
+m_16 = 0
+m_17 = beta_G * tau* (pi)
+m_18 = 0 
+
+
+if (tau+T_L-T_D <= 0){
+  p_r = 1
+}
+if (tau+T_L-T_D >= tau){
+  p_r = 0
+}
+if (0<tau+T_L-T_D && tau+T_L-T_D < tau){
+  p_r = (T_D-T_L)/tau
+}
+
+# probability: P(infecting a given friend, traced before recovered)
+T_DL = T_D-T_L
+
+if (T_DL < tau && T_DL >= 0){
+  p_i_c = (tau-T_DL)/tau - (exp(-beta_N * T_DL)- exp(-beta_N * tau))/(beta_N * tau)
+}
+if (T_DL < 0 && T_DL > -tau){
+  p_i_c = (tau+T_DL)/tau - (1- exp(-beta_N * (tau+T_DL)))/(beta_N * tau)
+}
+if (T_DL >= tau){
+  p_i_c = 0
+}
+if (T_DL <= -tau){
+  p_i_c = 0
+}
+
+if (T_DL < tau && T_DL >= 0){
+  V = (tau+T_L-T_D)*(tau-T_L+T_D)/(2*tau)
+}
+if (T_DL < 0 && T_DL > -tau){
+  V = (tau-T_L+T_D)^2 /(2*tau)
+}
+if (T_DL >= tau){
+  V = 0
+}
+if (T_DL <= -tau){
+  V = 0
+}
+
+
+m_21 = (D_tilde_minus_1*(1-exp(-beta_N*tau))*p_r*(1-p_M*p_D) + D_tilde_minus_1*p_i_c)*(1-pi)
+m_22 = D_tilde_minus_1*(1-exp(-beta_N*tau))*p_D*p_M*p_r*(1-pi)
+m_23 = (beta_G * V  + beta_G*tau*p_r)*(1-pi)
+m_24 = (D_tilde_minus_1*(1-exp(-beta_N*tau))*p_r*(1-p_M*p_D) + D_tilde_minus_1*p_i_c)*(pi)
+m_25 = D_tilde_minus_1*(1-exp(-beta_N*tau))*p_D*p_M*p_r*pi
+m_26 = 0 
+m_27 = (beta_G * V  + beta_G*tau*p_r)*(pi)
+m_28 = 0 
+
+
+m_31 = mu*(1-exp(-beta_N*tau))*(1-p_D*p_M)*(1-pi)
+m_32 = mu*(1-exp(-beta_N*tau))*(p_D*p_M)*(1-pi)
+m_33 = beta_G*tau*(1-pi)
+m_34 = mu*(1-exp(-beta_N*tau))*(1-p_D*p_M)*(pi)
+m_35 = mu*(1-exp(-beta_N*tau))*(p_D*p_M)*(pi)
+m_36 = 0
+m_37 = beta_G*tau*(pi)
+m_38 = 0 
+
+
+m_41 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(1-p_D*p_M)*(1-pi)
+m_42 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(p_D*p_M)*(1-pi)
+m_43 = beta_G * tau* (1-pi)
+m_44 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(1-p_D)*(pi)
+m_45 = 0
+m_46 = D_tilde_minus_1*(1-exp(-beta_N*tau))*(p_D)*(pi)
+m_47 = beta_G * tau*(1-p_D)*(pi)
+m_48 = beta_G * tau*(p_D)*(pi)
+
+m_51 = m_21
+m_52 = m_22
+m_53 = m_23
+m_54 = (D_tilde_minus_1*(1-exp(-beta_N*tau))*p_r*(1-p_D) + D_tilde_minus_1*p_i_c)*(pi)
+m_55 = 0 
+m_56 = D_tilde_minus_1*(1-exp(-beta_N*tau))*p_r*(p_D)*pi
+m_57 = (beta_G * V  + beta_G*tau*p_r*(1-p_D))*(pi)
+m_58 = beta_G*tau*p_r*(p_D)*(pi)
+
+
+if (T_L < tau){
+  p_inf = (tau-T_L)/tau - (1- exp(-beta_N * (tau-T_L)))/(beta_N * tau)
+}
+if (T_L >= tau){
+  p_inf = 0
+}
+
+# the average time since being infectious until traced: 
+
+if (T_L < tau){
+  T_inf = (tau-T_L)^2 /(2*tau)
+}
+if (T_L >= tau){
+  T_inf = 0
+}
+
+
+m_61 = D_tilde_minus_1*p_inf*(1-pi)
+m_62 = 0
+m_63 = beta_G * T_inf * (1-pi)
+m_64 = D_tilde_minus_1*p_inf*(pi)
+m_65 = 0
+m_66 = 0 
+m_67 = beta_G * T_inf * (pi)
+m_68 = 0
+  
+m_71 = mu*(1-exp(-beta_N*tau))*(1-p_D*p_M)*(1-pi)
+m_72 = mu*(1-exp(-beta_N*tau))*(p_D*p_M)*(1-pi)
+m_73 = beta_G*tau*(1-pi)
+m_74 = mu*(1-exp(-beta_N*tau))*(1-p_D)*pi
+m_75 = 0
+m_76 = mu*(1-exp(-beta_N*tau))*(p_D)*pi
+m_77 = beta_G*tau*(1-p_D)*(pi)
+m_78 = beta_G*tau*(p_D)*(pi)
+
+m_81 = mu*p_inf*(1-pi)
+m_82 = 0
+m_83 = beta_G * T_inf * (1-pi)
+m_84 = mu*p_inf*(pi)
+m_85 = 0
+m_86 = 0 
+m_87 =  beta_G * T_inf * (pi)
+m_88 = 0
+
+
+
+M_combine <- matrix(c(m_11, m_12, m_13, m_14, m_15, m_16, m_17,m_18, 
+                      m_21, m_22, m_23, m_24, m_25, m_26,m_27,m_28,
+                      m_31, m_32, m_33, m_34, m_35, m_36,m_37,m_38,
+                      m_41, m_42, m_43, m_44, m_45, m_46,m_47,m_48,
+                      m_51, m_52, m_53, m_54, m_55, m_56,m_57,m_58,
+                      m_61, m_62, m_63, m_64, m_65, m_66,m_67,m_68,
+                      m_71, m_72, m_73, m_74, m_75, m_76,m_77,m_78,
+                      m_81, m_82, m_83, m_84, m_85, m_86,m_87,m_88), 8, 8, byrow=TRUE)
+  
+#ev <- eigen(M_combine)
+
+#eigenvalues <- ev$values
+
+# Compute the spectral radius of M: the maximum of the absolute values of its eigenvalues
+return(spectralRadius(M_combine))
+  
+}
+# set corresponding parameters for new epidemic model: 
+mu = 5
+tau = 5
+
+betaN_sol = log(mu/(mu-0.5*3))/5
+betaG_sol = (0.5*3)/5
+
+T_L = 4
+T_D = 3
+p_D = 0.8
+
+# store the R_MD values from this model in a matrix:
+R_MD_new_m = matrix(nrow = n_grid,ncol = n_grid)
+
+for (k in (1:n_grid)) {
+  
+  p1 = p_seq[k]
+  
+  for (j in (1:n_grid)) {
+    
+    p2 = pi_seq[j] 
+    
+    R = R_comb(mu=mu, beta_N= betaN_sol, beta_G= betaG_sol, 
+               tau=tau, T_L= T_L,T_D=T_D,
+               p_D = p_D, pi=p2,p=p1)
+    
+    R_MD_new_m[j,k] = R
+    
+  }
+}
+```
+
+
+```{r}
+##############
+# Old Model #
+##############
+# set the corresponding parameters for old model: 
+beta = 3/5 
+delta = p_D*(1/tau) 
+# delta + gamma = 1/tau (so both model have the same length of infectious period)
+# and p_D = delta/(delta+gamma)
+gamma = 1/tau - delta
+
+# p takes values in 
+n_grid = 100
+p_seq = seq(0,1, length.out=n_grid)
+# pi takes values in 
+pi_seq = seq(0,1, length.out=n_grid)
+
+# store the R_MD values from the old model in a matrix:
+R_MD_old_m=matrix(nrow = n_grid,ncol = n_grid)
+
+for (k in (1:n_grid)) {
+  
+  p1 = p_seq[k]
+  
+  for (j in (1:n_grid)) {
+    
+    p2 = pi_seq[j] 
+    
+    R = R_DM_paper_2(beta=beta, gamma=gamma, 
+                     delta= delta,
+                     p=p1,p_A=p2)
+    
+    R_MD_old_m[j,k] = R
+  }
+}
+
+
+# store in a data frame 
+data_MD_compare <- expand.grid(app_fraction=pi_seq,manual_prob=p_seq)
+data_MD_compare$R_MD_old = c(R_MD_old_m)
+data_MD_compare$R_MD_new <-c(R_MD_new_m)
+
+
+plot_DM <- ggplot(data_MD_compare)+ 
+  labs(title="R_MD=1", y="app-using fraction pi_A", x="manual reporting probability p_M")+
+  # set contour breaks at desired level R_M =1
+  geom_contour(aes(x=manual_prob,y=app_fraction,z = R_MD_new), 
+               breaks = 1,size = 0.4,col= 'red')+
+  # set contour breaks at desired level R_M_2 =1
+  geom_contour(aes(x=manual_prob,y=app_fraction,z = R_MD_old), 
+               breaks = 1, col = '#05B9E2',size = 0.4)+  
+  theme(plot.title = element_text(hjust = 0.5))+
+  ylim(0,1)+
+  xlim(0,1)+
+  theme(text = element_text(size=10))
+
+```
+
+```{r}
+# Create a DataFrame 
+df_sample <- data.frame(
+  Xdata = rnorm(2),                        
+  Ydata = rnorm(2),
+  LegendData = c("model in previous work", "model in this paper"))
+  
+# Create a Scatter Plot and assign it 
+# to gplot data object
+gplot <- ggplot(df_sample, aes(Xdata, Ydata, color = LegendData)) +   
+  geom_line()+
+  scale_color_manual(values=c('#05B9E2','red'), 
+                       name="",
+                       labels=c("model in previous work", "model in this paper"))+
+  theme(text = element_text(size=10))
+
+# 2. Save the legend
+#+++++++++++++++++++++++
+legend = get_legend(gplot)
+
+# 4. Arrange ggplot2 graphs with a specific width
+grid.arrange(plot_M, plot_D,plot_DM, legend, ncol=4, widths=c(0.8, 0.8,0.8,0.6))
+```
+
